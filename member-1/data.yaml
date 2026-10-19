@@ -1,0 +1,10 @@
+path: C:/Users/kriti/OneDrive/Desktop/btech/3rd yr project/detection/data
+
+train: ./train/images
+val: ./valid/images
+
+test:
+
+nc: 4
+
+names: ['Helmet', 'NoHelmet', 'NoVest', 'Vest']
