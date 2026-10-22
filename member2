@@ -1,0 +1,185 @@
+import os
+import pickle
+import urllib.request
+import cv2
+import numpy as np
+import streamlit as st
+
+# Configuration & Paths
+DATA_DIR = "face_data"
+if not os.path.exists(DATA_DIR):
+  os.makedirs(DATA_DIR)
+
+MODEL_FILE = "trainner.yml"
+NAMES_FILE = "names.pkl"
+CASCADE_FILE = "haarcascade_frontalface_default.xml"
+
+# Robustly ensure the Haar Cascade file exists and is valid
+if not os.path.exists(CASCADE_FILE) or os.path.getsize(CASCADE_FILE) < 50000:
+  url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+  try:
+    urllib.request.urlretrieve(url, CASCADE_FILE)
+  except Exception:
+    pass
+
+# Load Haar Cascade with a fallback
+face_cascade = cv2.CascadeClassifier(CASCADE_FILE)
+if face_cascade.empty():
+  face_cascade = cv2.CascadeClassifier(
+      cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+  )
+
+st.set_page_config(
+    page_title="Industrial Face Surveillance Dashboard", layout="wide"
+)
+
+st.title("🛡️ Industrial Face Enrollment & Detection System")
+st.markdown("*Private 5G Edge-AI Video Processing & Surveillance Module*")
+
+
+# Load stored names dictionary
+def load_names():
+  if os.path.exists(NAMES_FILE):
+    with open(NAMES_FILE, "rb") as f:
+      return pickle.load(f)
+  return {}
+
+
+def save_names(names_dict):
+  with open(NAMES_FILE, "wb") as f:
+    pickle.dump(names_dict, f)
+
+
+# Sidebar Navigation
+nav_mode = st.sidebar.radio(
+    "Select Operation Mode", ["Live Surveillance & Detection", "Face Enrollment"]
+)
+
+# ==========================================
+# MODE 1: FACE ENROLLMENT
+# ==========================================
+if nav_mode == "Face Enrollment":
+  st.header("👤 Personnel Face Enrollment")
+  st.write(
+      "Register authorized industrial workers or staff into the system database."
+  )
+
+  employee_id = st.text_input("Enter Employee ID (Numeric e.g., 1, 2, 3)")
+  employee_name = st.text_input("Enter Employee Name")
+
+  if st.button("Capture Training Samples via Webcam"):
+    if not employee_id.isdigit() or employee_name.strip() == "":
+      st.error("Please enter a valid numeric ID and Name.")
+    else:
+      cap = cv2.VideoCapture(0)
+      count = 0
+      st.info(
+          "Capturing 20 face samples... Look steadily at the camera and move"
+          " slightly."
+      )
+
+      progress_bar = st.progress(0)
+      while count < 20:
+        ret, frame = cap.read()
+        if not ret:
+          break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+        for x, y, w, h in faces:
+          count += 1
+          face_img = gray[y : y + h, x : x + w]
+          cv2.imwrite(
+              f"{DATA_DIR}/user_{employee_id}_{count}.jpg",
+              cv2.resize(face_img, (200, 200)),
+          )
+          progress_bar.progress(int(count * 5))
+
+      cap.release()
+      st.success(f"Successfully collected training samples for {employee_name}!")
+
+      # Train model immediately
+      faces_data = []
+      ids = []
+      names_dict = load_names()
+      names_dict[int(employee_id)] = employee_name
+      save_names(names_dict)
+
+      for filename in os.listdir(DATA_DIR):
+        if filename.endswith(".jpg"):
+          path = os.path.join(DATA_DIR, filename)
+          img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+          id_val = int(filename.split("_")[1])
+          faces_data.append(img)
+          ids.append(id_val)
+
+      if len(faces_data) > 0:
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
+        recognizer.train(faces_data, np.array(ids))
+        recognizer.save(MODEL_FILE)
+        st.success("Face model updated and trained successfully!")
+
+# ==========================================
+# MODE 2: LIVE SURVEILLANCE & DETECTION
+# ==========================================
+elif nav_mode == "Live Surveillance & Detection":
+  st.header("📹 Real-time Industrial Face Detection & Monitoring")
+  st.write(
+      "Live monitoring stream tracking authorized personnel and flagging"
+      " unknown faces."
+  )
+
+  run_surveillance = st.checkbox("Start Live Stream Feed")
+  frame_placeholder = st.empty()
+
+  if run_surveillance:
+    if not os.path.exists(MODEL_FILE):
+      st.error(
+          "No trained face model found! Please go to 'Face Enrollment' first."
+      )
+    else:
+      recognizer = cv2.face.LBPHFaceRecognizer_create()
+      recognizer.read(MODEL_FILE)
+      names_dict = load_names()
+
+      cap = cv2.VideoCapture(0)
+
+      while run_surveillance and cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+          break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.2, 5)
+
+        for x, y, w, h in faces:
+          roi_gray = gray[y : y + h, x : x + w]
+          id_, confidence = recognizer.predict(
+              cv2.resize(roi_gray, (200, 200))
+          )
+
+          if confidence < 70 and id_ in names_dict:
+            name = names_dict[id_]
+            color = (0, 255, 0)  # Green for authorized
+          else:
+            name = "UNAUTHORIZED"
+            color = (0, 0, 255)  # Red for unauthorized
+
+          cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+          cv2.putText(
+              frame,
+              f"{name} ({round(confidence, 1)})",
+              (x, y - 10),
+              cv2.FONT_HERSHEY_SIMPLEX,
+              0.8,
+              color,
+              2,
+          )
+
+        frame_placeholder.image(
+            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+            channels="RGB",
+            use_container_width=True,
+        )
+
+      cap.release()
